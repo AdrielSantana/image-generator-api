@@ -1,61 +1,185 @@
+require("dotenv").config();
 const express = require("express");
 const app = express();
-const port = process.env.PORT || 3001;
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ limit: '5mb' }));
 
-app.get("/", (req, res) => res.type('html').send(html));
+const port = process.env.PORT || 3001;
+const credentials = require("./google-cloud-config.json");
+const { GoogleAuth } = require('google-auth-library');
+const { Storage } = require('@google-cloud/storage');
+const stream = require('stream');
+
+
+app.post("/text-to-image", async (req, res) => {
+  const { prompt, negativePrompt, CFG, steps } = req.body;
+  const fileName = prompt.replace(/[^a-zA-Z0-9]/g, "_").slice(0, prompt.length < 20 ? prompt.length : 20) + '.jpg';
+  console.log('Text to image', fileName, negativePrompt, CFG, steps)
+  const secret = req.headers.authorization?.split(" ")[1];
+
+  if (secret !== process.env.SECRET) {
+    console.log('Invalid token')
+    return res.json({ error: "Invalid token" });
+  }
+  console.log('Valid token')
+
+  try {
+    console.log('Try')
+    const auth = new GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+    const storage = new Storage({
+      credentials
+    });
+    console.log('Auth')
+
+    const token = await auth.getAccessToken();
+
+    console.log('response')
+    const response = await fetch(process.env.TEXT_TO_IMAGE_ENDPOINT_URL ?? "", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        instances: [
+          {
+            prompt,
+            negative_prompt: negativePrompt,
+            guindance_scale: CFG,
+            num_inference_steps: steps,
+            seed: -1,
+            noise_level: 100
+          },
+        ],
+      }),
+    });
+
+
+    const data = await response.json();
+
+    console.log('Data fetched')
+
+    if (data?.predictions[0]) {
+      console.log('Found image')
+      const image64 = data.predictions[0];
+      const bufferStream = new stream.PassThrough();
+      bufferStream.end(Buffer.from(image64, 'base64'));
+
+      const bucket = storage.bucket(process.env.BUCKET_NAME ?? "");
+      const file = bucket.file('text-to-image/' + fileName);
+      bufferStream.pipe(file.createWriteStream({
+        metadata: {
+          contentType: 'image/jpeg',
+        },
+      }))
+        .on('error', function (err) {
+          console.log('Error uploading image', err)
+        })
+        .on('finish', function () {
+          console.log('Finished uploading image')
+          wss.broadcast({ image64 })
+        });
+    }
+
+    return res.sendStatus(200)
+  } catch (error) {
+    if (error instanceof Error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+})
+
+app.post("/image-to-image", async (req, res) => {
+  const { prompt, negativePrompt, image, strength, CFG, steps } =
+    await req.body;
+  const fileName = prompt.replace(/[^a-zA-Z0-9]/g, "_").slice(0, prompt.length < 20 ? prompt.length : 20) + '.jpg';
+  console.log('Text to image', fileName, negativePrompt, CFG, steps)
+  const secret = req.headers.authorization?.split(" ")[1];
+
+  if (secret !== process.env.SECRET) {
+    console.log('Invalid token')
+    return res.json({ error: "Invalid token" });
+  }
+  console.log('Valid token')
+
+  try {
+    console.log('Try')
+    const auth = new GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+    const storage = new Storage({
+      credentials
+    });
+    console.log('Auth')
+
+    const token = await auth.getAccessToken();
+
+    console.log('response')
+    const response = await fetch(process.env.IMAGE_TO_IMAGE_ENDPOINT_URL ?? "", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        instances: [
+          {
+            prompt,
+            image,
+            negative_prompt: negativePrompt,
+            guindance_scale: CFG,
+            num_inference_steps: steps,
+            strength: strength / 100,
+            seed: -1,
+            noise_level: 100
+          },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+
+    console.log('Data fetched')
+
+    if (data?.predictions[0]) {
+      console.log('Found image')
+      const image64 = data.predictions[0];
+      const bufferStream = new stream.PassThrough();
+      bufferStream.end(Buffer.from(image64, 'base64'));
+
+      const bucket = storage.bucket(process.env.BUCKET_NAME ?? "");
+      const file = bucket.file('image-to-image/' + fileName);
+      bufferStream.pipe(file.createWriteStream({
+        metadata: {
+          contentType: 'image/jpeg',
+        },
+      }))
+        .on('error', function (err) {
+          console.log('Error uploading image', err)
+        })
+        .on('finish', function () {
+          console.log('Finished uploading image')
+          wss.broadcast({ image64 })
+        });
+    }
+
+    return res.sendStatus(200)
+  } catch (error) {
+    if (error instanceof Error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+})
 
 const server = app.listen(port, () => console.log(`Example app listening on port ${port}!`));
 
-server.keepAliveTimeout = 120 * 1000;
-server.headersTimeout = 120 * 1000;
+server.keepAliveTimeout = 5 * 60 * 1000;
+server.headersTimeout = 5 * 60 * 1000;
 
-const html = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>Hello from Render!</title>
-    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
-    <script>
-      setTimeout(() => {
-        confetti({
-          particleCount: 100,
-          spread: 70,
-          origin: { y: 0.6 },
-          disableForReducedMotion: true
-        });
-      }, 500);
-    </script>
-    <style>
-      @import url("https://p.typekit.net/p.css?s=1&k=vnd5zic&ht=tk&f=39475.39476.39477.39478.39479.39480.39481.39482&a=18673890&app=typekit&e=css");
-      @font-face {
-        font-family: "neo-sans";
-        src: url("https://use.typekit.net/af/00ac0a/00000000000000003b9b2033/27/l?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3") format("woff2"), url("https://use.typekit.net/af/00ac0a/00000000000000003b9b2033/27/d?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3") format("woff"), url("https://use.typekit.net/af/00ac0a/00000000000000003b9b2033/27/a?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3") format("opentype");
-        font-style: normal;
-        font-weight: 700;
-      }
-      html {
-        font-family: neo-sans;
-        font-weight: 700;
-        font-size: calc(62rem / 16);
-      }
-      body {
-        background: white;
-      }
-      section {
-        border-radius: 1em;
-        padding: 1em;
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        margin-right: -50%;
-        transform: translate(-50%, -50%);
-      }
-    </style>
-  </head>
-  <body>
-    <section>
-      Hello from Render!
-    </section>
-  </body>
-</html>
-`
+const appWs = require('./app-ws');
+const wss = appWs(server)
+

@@ -1,2 +1,5 @@
 node_modules
 .DS_Store
+
+.env
+google-cloud-config.json
